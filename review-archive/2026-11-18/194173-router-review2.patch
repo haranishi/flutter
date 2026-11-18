@@ -1,0 +1,590 @@
+diff --git a/packages/flutter/test/material/app_test.dart b/packages/flutter/test/material/app_test.dart
+index 598a3c1a94f..8828e8e3724 100644
+--- a/packages/flutter/test/material/app_test.dart
++++ b/packages/flutter/test/material/app_test.dart
+@@ -1240,6 +1240,52 @@ void main() {
+     expect(find.text('popped'), findsOneWidget);
+   });
+ 
++  testWidgets('MaterialApp.router router config handles back without an explicit dispatcher', (
++    WidgetTester tester,
++  ) async {
++    final platformCalls = <MethodCall>[];
++    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (
++      MethodCall call,
++    ) async {
++      platformCalls.add(call);
++      return null;
++    });
++    final delegate = _BackButtonRouterDelegate();
++    addTearDown(delegate.dispose);
++
++    Widget buildApp() {
++      return MaterialApp.router(
++        routerConfig: RouterConfig<RouteInformation>(routerDelegate: delegate),
++      );
++    }
++
++    await tester.pumpWidget(buildApp());
++    final BackButtonDispatcher? defaultDispatcher = tester
++        .widget<Router<Object>>(find.byType(Router<Object>))
++        .backButtonDispatcher;
++    expect(defaultDispatcher, isA<RootBackButtonDispatcher>());
++    await tester.pumpWidget(buildApp());
++    expect(
++      tester.widget<Router<Object>>(find.byType(Router<Object>)).backButtonDispatcher,
++      same(defaultDispatcher),
++    );
++    expect(find.text('initial'), findsOneWidget);
++
++    await tester.binding.handlePopRoute();
++    await tester.pumpAndSettle();
++    expect(find.text('initial'), findsNothing);
++    expect(find.text('popped'), findsOneWidget);
++    expect(platformCalls.where((MethodCall call) => call.method == 'SystemNavigator.pop'), isEmpty);
++
++    await tester.binding.handlePopRoute();
++    await tester.pumpAndSettle();
++    expect(find.text('popped'), findsOneWidget);
++    expect(
++      platformCalls.where((MethodCall call) => call.method == 'SystemNavigator.pop'),
++      hasLength(1),
++    );
++  });
++
+   testWidgets('MaterialApp.builder can build app without a Navigator', (WidgetTester tester) async {
+     Widget? builderChild;
+     await tester.pumpWidget(
+@@ -1746,6 +1792,32 @@ class SimpleRouteInformationParser extends RouteInformationParser<RouteInformati
+   }
+ }
+ 
++class _BackButtonRouterDelegate extends RouterDelegate<RouteInformation>
++    with PopNavigatorRouterDelegateMixin<RouteInformation>, ChangeNotifier {
++  @override
++  final navigatorKey = GlobalKey<NavigatorState>();
++  bool _showInitialPage = true;
++
++  @override
++  Future<void> setNewRoutePath(RouteInformation configuration) => SynchronousFuture<void>(null);
++
++  @override
++  Widget build(BuildContext context) {
++    return Navigator(
++      key: navigatorKey,
++      pages: <Page<void>>[
++        const MaterialPage<void>(child: Text('popped')),
++        if (_showInitialPage)
++          const MaterialPage<void>(key: ValueKey<String>('initial'), child: Text('initial')),
++      ],
++      onDidRemovePage: (Page<Object?> page) {
++        _showInitialPage = false;
++        notifyListeners();
++      },
++    );
++  }
++}
++
+ class SimpleNavigatorRouterDelegate extends RouterDelegate<RouteInformation>
+     with PopNavigatorRouterDelegateMixin<RouteInformation>, ChangeNotifier {
+   SimpleNavigatorRouterDelegate({required this.builder, required this.onPopPage}) {
+diff --git a/packages/flutter/test/widgets/app_test.dart b/packages/flutter/test/widgets/app_test.dart
+index 776e8833d7b..26b22ec4bc6 100644
+--- a/packages/flutter/test/widgets/app_test.dart
++++ b/packages/flutter/test/widgets/app_test.dart
+@@ -452,34 +452,34 @@ void main() {
+     testWidgets('WidgetsApp.router router config handles back without an explicit dispatcher '
+         '(route information: $provideRouteInformation)', (WidgetTester tester) async {
+       // Regression test for https://github.com/flutter/flutter/issues/166733.
+-      var systemPopCount = 0;
++      final platformCalls = <MethodCall>[];
+       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (
+         MethodCall call,
+       ) async {
+-        if (call.method == 'SystemNavigator.pop') {
+-          systemPopCount += 1;
+-        }
++        platformCalls.add(call);
+         return null;
+       });
+       final navigatorKey = GlobalKey<NavigatorState>();
+       var showInitialPage = true;
+       late final _TestRouterDelegate delegate;
+       delegate = _TestRouterDelegate(
+-        builder: (BuildContext context, RouteInformation? information) => Navigator(
+-          key: navigatorKey,
+-          pages: <Page<void>>[
+-            const TestPage<void>(child: Text('popped')),
+-            if (showInitialPage)
+-              TestPage<void>(
+-                key: const ValueKey<String>('initial'),
+-                child: Text(information?.uri.toString() ?? 'initial'),
+-              ),
+-          ],
+-          onDidRemovePage: (Page<Object?> page) {
+-            showInitialPage = false;
+-            delegate.notifyListeners();
+-          },
+-        ),
++        builder: (BuildContext context, RouteInformation? information) {
++          return Navigator(
++            key: navigatorKey,
++            pages: <Page<void>>[
++              const TestPage<void>(child: Text('popped')),
++              if (showInitialPage)
++                TestPage<void>(
++                  key: const ValueKey<String>('initial'),
++                  child: Text(information?.uri.toString() ?? 'initial'),
++                ),
++            ],
++            onDidRemovePage: (Page<Object?> page) {
++              showInitialPage = false;
++              delegate.notifyListeners();
++            },
++          );
++        },
+         onPopRoute: () => navigatorKey.currentState!.maybePop(),
+       );
+       addTearDown(delegate.dispose);
+@@ -526,11 +526,18 @@ void main() {
+       await tester.pumpAndSettle();
+       expect(find.text('popped'), findsOneWidget);
+       expect(find.text('initial'), findsNothing);
+-      expect(systemPopCount, 0);
++      expect(
++        platformCalls.where((MethodCall call) => call.method == 'SystemNavigator.pop'),
++        isEmpty,
++      );
+ 
+       await tester.binding.handlePopRoute();
+       await tester.pumpAndSettle();
+-      expect(systemPopCount, 1);
++      expect(find.text('popped'), findsOneWidget);
++      expect(
++        platformCalls.where((MethodCall call) => call.method == 'SystemNavigator.pop'),
++        hasLength(1),
++      );
+     });
+   }
+ 
+@@ -660,72 +667,80 @@ void main() {
+   for (final changeCallback in <bool>[false, true]) {
+     testWidgets('WidgetsApp.router swaps dispatchers with a BackButtonListener '
+         '(change callback: $changeCallback)', (WidgetTester tester) async {
+-      final calls = <String>[];
+-      Future<bool> record(String name) {
+-        calls.add(name);
+-        return SynchronousFuture<bool>(false);
++      final callbackCounts = List<int>.filled(7, 0);
++      var delegateCount = 0;
++      ValueGetter<Future<bool>> callbackFor(int index) {
++        return () {
++          callbackCounts[index] += 1;
++          return SynchronousFuture<bool>(false);
++        };
+       }
+ 
+-      ValueGetter<Future<bool>> callback = () => record('listener');
++      ValueGetter<Future<bool>> callback = callbackFor(0);
+       final delegate = _TestRouterDelegate(
+         builder: (BuildContext context, RouteInformation? information) {
+           return BackButtonListener(onBackButtonPressed: callback, child: const SizedBox.shrink());
+         },
+-        onPopRoute: () => record('router'),
++        onPopRoute: () {
++          delegateCount += 1;
++          return SynchronousFuture<bool>(false);
++        },
+       );
+       addTearDown(delegate.dispose);
+       final explicitDispatcher = RootBackButtonDispatcher();
+       final configDispatcher = RootBackButtonDispatcher();
+-      BackButtonDispatcher? previousDispatcher;
+-      Future<BackButtonDispatcher> switchTo(
+-        String name, {
+-        BackButtonDispatcher? dispatcher,
+-        bool useConfig = true,
+-      }) async {
++      final dispatchers = <BackButtonDispatcher>{explicitDispatcher, configDispatcher};
++      final expectedCallbackCounts = List<int>.filled(7, 0);
++      BackButtonDispatcher? previousDefaultDispatcher;
++      State<StatefulWidget>? listenerState;
++      for (final (int step, int source) in <int>[0, 1, 2, 0, 2, 1, 0].indexed) {
++        // 0: default, 1: individual delegates, 2: RouterConfig.
+         if (changeCallback) {
+-          callback = () => record(name);
++          callback = callbackFor(step);
+         }
+         await tester.pumpWidget(
+-          useConfig
++          source == 1
+               ? WidgetsApp.router(
+-                  routerConfig: RouterConfig<RouteInformation>(
+-                    routerDelegate: delegate,
+-                    backButtonDispatcher: dispatcher,
+-                  ),
++                  routerDelegate: delegate,
++                  backButtonDispatcher: explicitDispatcher,
+                   color: const Color(0xFF123456),
+                 )
+               : WidgetsApp.router(
+-                  routerDelegate: delegate,
+-                  backButtonDispatcher: dispatcher,
++                  routerConfig: RouterConfig<RouteInformation>(
++                    routerDelegate: delegate,
++                    backButtonDispatcher: source == 2 ? configDispatcher : null,
++                  ),
+                   color: const Color(0xFF123456),
+                 ),
+         );
+-        final BackButtonDispatcher current = tester
++        expect(tester.takeException(), isNull);
++        listenerState ??= tester.state(find.byType(BackButtonListener));
++        expect(tester.state(find.byType(BackButtonListener)), same(listenerState));
++        final BackButtonDispatcher dispatcher = tester
+             .widget<Router<Object>>(find.byType(Router<Object>))
+             .backButtonDispatcher!;
+-        if (dispatcher != null) {
+-          expect(current, same(dispatcher));
++        if (source == 0) {
++          expect(dispatcher, isA<RootBackButtonDispatcher>());
++          expect(dispatcher, isNot(same(previousDefaultDispatcher)));
++          previousDefaultDispatcher = dispatcher;
++        } else {
++          expect(dispatcher, same(source == 1 ? explicitDispatcher : configDispatcher));
++        }
++        dispatchers.add(dispatcher);
++        for (final other in dispatchers) {
++          expect(other.hasCallbacks, identical(other, dispatcher));
+         }
+-        expect(previousDispatcher?.hasCallbacks, isNot(true));
+-        previousDispatcher = current;
+         await tester.binding.handlePopRoute();
+         await tester.pump();
+-        expect(calls, <String>[if (changeCallback) name else 'listener', 'router']);
+-        calls.clear();
+-        return current;
++        expect(tester.takeException(), isNull);
++        expectedCallbackCounts[changeCallback ? step : 0] += 1;
++        expect(callbackCounts, expectedCallbackCounts);
++        expect(delegateCount, step + 1);
+       }
+-
+-      final BackButtonDispatcher firstDefault = await switchTo('default');
+-      final State<StatefulWidget> listenerState = tester.state(find.byType(BackButtonListener));
+-      await switchTo('delegates', dispatcher: explicitDispatcher, useConfig: false);
+-      await switchTo('config', dispatcher: configDispatcher);
+-      expect(await switchTo('default after config'), isNot(same(firstDefault)));
+-      await switchTo('config again', dispatcher: configDispatcher);
+-      await switchTo('delegates again', dispatcher: explicitDispatcher, useConfig: false);
+-      await switchTo('default after delegates');
+-      expect(tester.state(find.byType(BackButtonListener)), same(listenerState));
+       await tester.pumpWidget(const SizedBox.shrink());
+-      expect(previousDispatcher!.hasCallbacks, isFalse);
++      for (final dispatcher in dispatchers) {
++        expect(dispatcher.hasCallbacks, isFalse);
++      }
+     });
+   }
+ 
+@@ -733,53 +748,87 @@ void main() {
+     WidgetTester tester,
+   ) async {
+     final calls = <String>[];
+-    Future<bool> record(String name) {
+-      calls.add(name);
++    Future<bool> listenerCallback() {
++      calls.add('listener');
+       return SynchronousFuture<bool>(false);
+     }
+ 
+-    Future<bool> listenerCallback() => record('listener');
+     final innerDelegate = _TestRouterDelegate(
+-      builder: (BuildContext context, RouteInformation? information) =>
+-          BackButtonListener(onBackButtonPressed: listenerCallback, child: const SizedBox.shrink()),
+-      onPopRoute: () => record('inner'),
++      builder: (BuildContext context, RouteInformation? information) {
++        return BackButtonListener(
++          onBackButtonPressed: listenerCallback,
++          child: const SizedBox.shrink(),
++        );
++      },
++      onPopRoute: () {
++        calls.add('inner');
++        return SynchronousFuture<bool>(false);
++      },
+     );
++    addTearDown(innerDelegate.dispose);
+     final outerDelegate = _TestRouterDelegate(
+-      builder: (BuildContext context, RouteInformation? information) => Router<RouteInformation>(
+-        routerDelegate: innerDelegate,
+-        backButtonDispatcher: Router.of(context).backButtonDispatcher!
+-            .createChildBackButtonDispatcher(),
+-      ),
+-      onPopRoute: () => record('outer'),
++      builder: (BuildContext context, RouteInformation? information) {
++        final ChildBackButtonDispatcher dispatcher = Router.of(context).backButtonDispatcher!
++            .createChildBackButtonDispatcher();
++        return Router<RouteInformation>(
++          routerDelegate: innerDelegate,
++          backButtonDispatcher: dispatcher,
++        );
++      },
++      onPopRoute: () {
++        calls.add('outer');
++        return SynchronousFuture<bool>(false);
++      },
+     );
+-    addTearDown(innerDelegate.dispose);
+     addTearDown(outerDelegate.dispose);
+-    Future<RootBackButtonDispatcher> pumpApp([RootBackButtonDispatcher? dispatcher]) async {
+-      await tester.pumpWidget(
+-        WidgetsApp.router(
+-          routerConfig: RouterConfig<RouteInformation>(
+-            routerDelegate: outerDelegate,
+-            backButtonDispatcher: dispatcher,
++    final explicitDispatcher = RootBackButtonDispatcher();
++    final defaultDispatchers = <RootBackButtonDispatcher>[];
++    RootBackButtonDispatcher? previousDispatcher;
++    State<StatefulWidget>? listenerState;
++    for (var cycle = 0; cycle < 3; cycle += 1) {
++      for (final dispatcher in <RootBackButtonDispatcher?>[null, explicitDispatcher]) {
++        await tester.pumpWidget(
++          WidgetsApp.router(
++            routerConfig: RouterConfig<RouteInformation>(
++              routerDelegate: outerDelegate,
++              backButtonDispatcher: dispatcher,
++            ),
++            color: const Color(0xFF123456),
+           ),
+-          color: const Color(0xFF123456),
+-        ),
+-      );
+-      await tester.binding.handlePopRoute();
+-      await tester.pump();
+-      expect(calls, <String>['listener', 'inner', 'outer']);
+-      calls.clear();
+-      return tester.widget<Router<Object>>(find.byType(Router<Object>)).backButtonDispatcher!
+-          as RootBackButtonDispatcher;
++        );
++        expect(tester.takeException(), isNull);
++        listenerState ??= tester.state(find.byType(BackButtonListener));
++        expect(tester.state(find.byType(BackButtonListener)), same(listenerState));
++        final currentDispatcher =
++            tester.widget<Router<Object>>(find.byType(Router<Object>)).backButtonDispatcher!
++                as RootBackButtonDispatcher;
++        if (dispatcher == null) {
++          expect(defaultDispatchers, isNot(contains(currentDispatcher)));
++          defaultDispatchers.add(currentDispatcher);
++        } else {
++          expect(currentDispatcher, same(explicitDispatcher));
++        }
++        if (previousDispatcher != null) {
++          expect(previousDispatcher.hasCallbacks, isFalse);
++          expect(tester.binding.removeObserver(previousDispatcher), isFalse);
++        }
++        expect(currentDispatcher.hasCallbacks, isTrue);
++        previousDispatcher = currentDispatcher;
++        await tester.binding.handlePopRoute();
++        await tester.pump();
++        expect(calls, <String>['listener', 'inner', 'outer']);
++        calls.clear();
++      }
+     }
+-
+-    final RootBackButtonDispatcher defaultDispatcher = await pumpApp();
+-    final explicitDispatcher = RootBackButtonDispatcher();
+-    await pumpApp(explicitDispatcher);
+-    expect(defaultDispatcher.hasCallbacks, isFalse);
+-    expect(tester.binding.removeObserver(defaultDispatcher), isFalse);
+     await tester.pumpWidget(const SizedBox.shrink());
+-    expect(explicitDispatcher.hasCallbacks, isFalse);
+-    expect(tester.binding.removeObserver(explicitDispatcher), isFalse);
++    expect(defaultDispatchers, hasLength(3));
++    for (final dispatcher in <RootBackButtonDispatcher>[
++      ...defaultDispatchers,
++      explicitDispatcher,
++    ]) {
++      expect(dispatcher.hasCallbacks, isFalse);
++      expect(tester.binding.removeObserver(dispatcher), isFalse);
++    }
+   });
+ 
+   testWidgets('WidgetsApp.router has correct default', (WidgetTester tester) async {
+diff --git a/packages/flutter/test/widgets/router_test.dart b/packages/flutter/test/widgets/router_test.dart
+index 8cc3a364711..7b886b66462 100644
+--- a/packages/flutter/test/widgets/router_test.dart
++++ b/packages/flutter/test/widgets/router_test.dart
+@@ -1106,54 +1106,155 @@ void main() {
+     expect(find.text('popped'), findsOneWidget);
+   });
+ 
++  testWidgets('RootBackButtonDispatcher detaches after its last child and can be reused', (
++    WidgetTester tester,
++  ) async {
++    final dispatcher = RootBackButtonDispatcher();
++    final ChildBackButtonDispatcher firstChild = dispatcher.createChildBackButtonDispatcher();
++    final ChildBackButtonDispatcher secondChild = dispatcher.createChildBackButtonDispatcher();
++    final calls = <String>[];
++    Future<bool> rootCallback() {
++      calls.add('root');
++      return SynchronousFuture<bool>(false);
++    }
++
++    Future<bool> firstCallback() {
++      calls.add('first');
++      return SynchronousFuture<bool>(false);
++    }
++
++    Future<bool> secondCallback() {
++      calls.add('second');
++      return SynchronousFuture<bool>(false);
++    }
++
++    dispatcher.addCallback(rootCallback);
++    firstChild
++      ..addCallback(firstCallback)
++      ..takePriority();
++    secondChild
++      ..addCallback(secondCallback)
++      ..takePriority();
++    await tester.binding.handlePopRoute();
++    expect(calls, <String>['second', 'first', 'root']);
++    calls.clear();
++
++    dispatcher.removeCallback(rootCallback);
++    secondChild.removeCallback(secondCallback);
++    await tester.binding.handlePopRoute();
++    expect(calls, <String>['first']);
++    calls.clear();
++
++    firstChild.removeCallback(firstCallback);
++    expect(dispatcher.hasCallbacks, isFalse);
++    expect(tester.binding.removeObserver(dispatcher), isFalse);
++    dispatcher.addCallback(rootCallback);
++    await tester.binding.handlePopRoute();
++    expect(calls, <String>['root']);
++    calls.clear();
++
++    firstChild
++      ..addCallback(firstCallback)
++      ..takePriority();
++    firstChild.removeCallback(firstCallback);
++    await tester.binding.handlePopRoute();
++    expect(calls, <String>['root']);
++    dispatcher.removeCallback(rootCallback);
++    expect(dispatcher.hasCallbacks, isFalse);
++  });
++
++  testWidgets('RootBackButtonDispatcher detaches after its last grandchild', (
++    WidgetTester tester,
++  ) async {
++    final dispatcher = RootBackButtonDispatcher();
++    final ChildBackButtonDispatcher child = dispatcher.createChildBackButtonDispatcher();
++    final ChildBackButtonDispatcher grandchild = child.createChildBackButtonDispatcher();
++    Future<bool> callback() => SynchronousFuture<bool>(false);
++
++    dispatcher.addCallback(callback);
++    child
++      ..addCallback(callback)
++      ..takePriority();
++    grandchild
++      ..addCallback(callback)
++      ..takePriority();
++    dispatcher.removeCallback(callback);
++    child.removeCallback(callback);
++    grandchild.removeCallback(callback);
++
++    expect(grandchild.hasCallbacks, isFalse);
++    expect(child.hasCallbacks, isFalse);
++    expect(dispatcher.hasCallbacks, isFalse);
++    expect(tester.binding.removeObserver(dispatcher), isFalse);
++  });
++
+   for (final keepRootCallback in <bool>[false, true]) {
+-    testWidgets('Grandchild removal preserves an active ancestor callback and allows reuse '
++    testWidgets('Grandchild removal preserves an active ancestor callback '
+         '(root: $keepRootCallback)', (WidgetTester tester) async {
+       final dispatcher = RootBackButtonDispatcher();
+       final ChildBackButtonDispatcher child = dispatcher.createChildBackButtonDispatcher();
+       final ChildBackButtonDispatcher grandchild = child.createChildBackButtonDispatcher();
+       final calls = <String>[];
+-      Future<bool> record(String name) {
+-        calls.add(name);
++      Future<bool> rootCallback() {
++        calls.add('root');
++        return SynchronousFuture<bool>(false);
++      }
++
++      Future<bool> childCallback() {
++        calls.add('child');
+         return SynchronousFuture<bool>(false);
+       }
+ 
+-      Future<bool> rootCallback() => record('root');
+-      Future<bool> childCallback() => record('child');
+-      Future<bool> grandchildCallback() => record('grandchild');
+-      void attach() {
+-        dispatcher.addCallback(rootCallback);
+-        child.addCallback(childCallback);
+-        grandchild.addCallback(grandchildCallback);
+-        grandchild.takePriority();
++      Future<bool> grandchildCallback() {
++        calls.add('grandchild');
++        return SynchronousFuture<bool>(false);
+       }
+ 
+-      attach();
++      dispatcher.addCallback(rootCallback);
++      child
++        ..addCallback(childCallback)
++        ..takePriority();
++      grandchild
++        ..addCallback(grandchildCallback)
++        ..takePriority();
+       if (keepRootCallback) {
+         child.removeCallback(childCallback);
+       } else {
+         dispatcher.removeCallback(rootCallback);
+       }
+       grandchild.removeCallback(grandchildCallback);
++      expect(grandchild.hasCallbacks, isFalse);
+       expect(child.hasCallbacks, !keepRootCallback);
+       expect(dispatcher.hasCallbacks, isTrue);
+       await tester.binding.handlePopRoute();
+       expect(calls, <String>[if (keepRootCallback) 'root' else 'child']);
++      calls.clear();
+ 
+-      dispatcher.removeCallback(rootCallback);
+-      child.removeCallback(childCallback);
++      if (keepRootCallback) {
++        dispatcher.removeCallback(rootCallback);
++      } else {
++        child.removeCallback(childCallback);
++      }
+       expect(child.hasCallbacks, isFalse);
+       expect(dispatcher.hasCallbacks, isFalse);
+       expect(tester.binding.removeObserver(dispatcher), isFalse);
+ 
+-      // The same dispatchers can handle back again after being detached.
+-      calls.clear();
+-      attach();
++      dispatcher.addCallback(rootCallback);
++      child
++        ..addCallback(childCallback)
++        ..takePriority();
++      grandchild
++        ..addCallback(grandchildCallback)
++        ..takePriority();
+       await tester.binding.handlePopRoute();
+       expect(calls, <String>['grandchild', 'child', 'root']);
++
+       dispatcher.removeCallback(rootCallback);
+       child.removeCallback(childCallback);
+       grandchild.removeCallback(grandchildCallback);
++      expect(grandchild.hasCallbacks, isFalse);
++      expect(child.hasCallbacks, isFalse);
++      expect(dispatcher.hasCallbacks, isFalse);
+       expect(tester.binding.removeObserver(dispatcher), isFalse);
+     });
+   }

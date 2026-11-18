@@ -1,0 +1,134 @@
+diff --git a/packages/flutter/lib/src/rendering/sliver_tree.dart b/packages/flutter/lib/src/rendering/sliver_tree.dart
+index cfe3b0c75b0..46eb6bc46de 100644
+--- a/packages/flutter/lib/src/rendering/sliver_tree.dart
++++ b/packages/flutter/lib/src/rendering/sliver_tree.dart
+@@ -333,8 +333,6 @@ class RenderTreeSliver extends RenderSliverVariedExtentList {
+     for (final int parentIndex in animationIndices.reversed) {
+       Rect? clip;
+       if (parentIndex >= 0) {
+-        // These clip rects deliberately mirror paint(); changes to its clip
+-        // coordinates must also be applied here.
+         final double leadingOffset =
+             indexToLayoutOffset(0.0, parentIndex) +
+             itemExtentBuilder(parentIndex, layoutDimensions)!;
+diff --git a/packages/flutter/test/widgets/sliver_tree_test.dart b/packages/flutter/test/widgets/sliver_tree_test.dart
+index efca549aec4..bdd56c0666b 100644
+--- a/packages/flutter/test/widgets/sliver_tree_test.dart
++++ b/packages/flutter/test/widgets/sliver_tree_test.dart
+@@ -1151,6 +1151,116 @@ void main() {
+     });
+   }
+ 
++  testWidgets('TreeSliver hit testing follows painted clips after scrolling', (
++    WidgetTester tester,
++  ) async {
++    final controller = TreeSliverController();
++    final scrollController = ScrollController();
++    addTearDown(scrollController.dispose);
++    final parent = TreeSliverNode<String>(
++      'Parent',
++      expanded: true,
++      children: List<TreeSliverNode<String>>.generate(
++        3,
++        (int index) => TreeSliverNode<String>('Child $index'),
++      ),
++    );
++    final tappedNodes = <String>[];
++    await tester.pumpWidget(
++      Directionality(
++        textDirection: TextDirection.ltr,
++        child: CustomScrollView(
++          controller: scrollController,
++          slivers: <Widget>[
++            TreeSliver<String>(
++              tree: <TreeSliverNode<String>>[
++                ...List<TreeSliverNode<String>>.generate(
++                  10,
++                  (int index) => TreeSliverNode<String>('Before $index'),
++                ),
++                parent,
++                ...List<TreeSliverNode<String>>.generate(
++                  30,
++                  (int index) => TreeSliverNode<String>('After $index'),
++                ),
++              ],
++              controller: controller,
++              toggleAnimationStyle: const AnimationStyle(
++                curve: Curves.linear,
++                duration: Duration(milliseconds: 400),
++              ),
++              treeNodeBuilder:
++                  (
++                    BuildContext context,
++                    TreeSliverNode<Object?> node,
++                    AnimationStyle animationStyle,
++                  ) {
++                    return GestureDetector(
++                      behavior: HitTestBehavior.opaque,
++                      onTap: () => tappedNodes.add(node.content.toString()),
++                      child: Text(node.content.toString()),
++                    );
++                  },
++            ),
++          ],
++        ),
++      ),
++    );
++    scrollController.jumpTo(120.0);
++    await tester.pump();
++    controller.collapseNode(parent);
++    await tester.pump();
++    await tester.pump(const Duration(milliseconds: 200));
++
++    final RenderTreeSliver renderTree = tester.renderObject<RenderTreeSliver>(
++      find.byType(TreeSliver<String>),
++    );
++    expect(renderTree.constraints.scrollOffset, 120.0);
++    expect(renderTree.activeAnimations.values.single.value, 0.5);
++    final RenderBox cachedChild = renderTree.lastChild!;
++    final double trailingOffset =
++        renderTree.indexToLayoutOffset(0.0, renderTree.indexOf(cachedChild)) +
++        cachedChild.size.height;
++    // Match the clip that paint() actually uses, including its scroll-space offsets.
++    final clip = Rect.fromLTRB(0.0, 440.0, 800.0, trailingOffset);
++    final Offset paintedOffset = tester.getTopLeft(find.text('After 2'));
++    expect(
++      renderTree,
++      paints
++        ..clipRect(rect: clip)
++        ..something((Symbol method, List<dynamic> arguments) {
++          return method == #drawParagraph && arguments[1] == paintedOffset;
++        }),
++    );
++    expect(tester.getRect(find.text('Child 2')).overlaps(clip), isFalse);
++    expect(find.text('Child 2').hitTestable(), findsNothing);
++    expect(clip.contains(tester.getCenter(find.text('After 2'))), isTrue);
++    expect(find.text('After 2').hitTestable(), findsOneWidget);
++    await tester.tap(find.text('After 2'));
++    await tester.tapAt(tester.getCenter(find.text('Child 2')));
++    expect(tappedNodes, <String>['After 2']);
++
++    final double cachedPosition = renderTree.childMainAxisPosition(cachedChild);
++    expect(cachedPosition, greaterThan(renderTree.geometry!.paintExtent));
++    expect(
++      renderTree,
++      isNot(
++        paints..something((Symbol method, List<dynamic> arguments) {
++          return method == #drawParagraph && arguments[1] == Offset(0.0, cachedPosition);
++        }),
++      ),
++    );
++    expect(
++      renderTree.hitTest(
++        SliverHitTestResult(),
++        mainAxisPosition: cachedPosition + cachedChild.size.height / 2,
++        crossAxisPosition: 400.0,
++      ),
++      isFalse,
++    );
++    await tester.pumpAndSettle();
++  });
++
+   testWidgets('TreeSliver animations must follow their parent', (WidgetTester tester) async {
+     await tester.pumpWidget(
+       Directionality(
